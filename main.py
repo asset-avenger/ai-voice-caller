@@ -6,7 +6,7 @@ import uvicorn
 from audio_utils import convert_to_mulaw
 from speech_to_text import transcribe_audio_chunk
 from gpt_stream import stream_gpt_response
-from elevenlabs import stream_to_speech
+from elevenlabs_utils import stream_to_speech
 
 app = FastAPI()
 
