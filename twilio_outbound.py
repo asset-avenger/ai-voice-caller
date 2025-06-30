@@ -6,7 +6,7 @@ account_sid = os.getenv("TWILIO_ACCOUNT_SID")
 auth_token = os.getenv("TWILIO_AUTH_TOKEN")
 from_number = os.getenv("TWILIO_PHONE_NUMBER")
 to_number = os.getenv("TARGET_PHONE_NUMBER")
-websocket_url = "wss://your-app.onrender.com/stream"
+websocket_url = "wss://ai-voice-caller-ptkq.onrender.com/stream"
 
 client = Client(account_sid, auth_token)
 
