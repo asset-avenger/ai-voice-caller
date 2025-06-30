@@ -24,30 +24,43 @@ async def stream_audio(websocket: WebSocket):
     print("📞 Call connected.")
 
     try:
-        # 🔇 0. Send initial silence to prevent Twilio drop
-        silence = AudioSegment.silent(duration=2000)  # 2 seconds
+        # 🔇 0. Send valid μ-law silence to prevent Twilio disconnect
+        print("🔇 Generating and sending 2s of silence to Twilio...")
+        silence = AudioSegment.silent(duration=2000)
         silence = silence.set_channels(1).set_frame_rate(8000).set_sample_width(2)
-        mulaw_silence = audioop.lin2ulaw(silence.raw_data, 2)
+        raw_pcm = silence.raw_data
+        mulaw_silence = audioop.lin2ulaw(raw_pcm, 2)
         await websocket.send_bytes(mulaw_silence)
-        print("📤 Sent initial silence to hold call")
+        print(f"📤 Sent silence chunk of {len(mulaw_silence)} bytes")
 
-        # 🗣️ 1. AI-generated, human-sounding greeting
+        # 🗣️ 1. Send a fast hardcoded greeting with ElevenLabs to buy time
+        print("🗣️ Sending fast static ElevenLabs greeting...")
+        greeting_text = (
+            "Hi, I’m calling about some money that may be owed to you from a property sale. "
+            "Do you have a quick minute?"
+        )
+        async for audio_chunk in synthesize_speech(greeting_text):
+            mulaw_audio = convert_to_mulaw(audio_chunk)
+            await websocket.send_bytes(mulaw_audio)
+            print("📤 Sent static greeting chunk")
+
+        # 🧠 2. Send GPT-generated greeting (overwrites or continues above)
+        print("🤖 Generating AI dynamic greeting...")
         initial_prompt = (
-            "Call the person and introduce yourself naturally. "
-            "Use a friendly, casual tone. You're calling to assist them with recovering unclaimed surplus funds "
-            "from a recent foreclosure. Avoid robotic phrasing. Just say, for example: "
-            "'Hi, is this [name]? I’m reaching out because it looks like you're owed some money from a property sale — I may be able to help you claim it.' "
-            "Sound like a helpful, professional person, not an AI."
+            "Call the person and introduce yourself in a helpful, professional way. "
+            "You're contacting them because they may be entitled to unclaimed surplus funds from a foreclosure. "
+            "Speak clearly and concisely — no need to say you're an AI or use robotic phrasing. "
+            "Say something like: 'Hi, I’m calling because it looks like you’re owed some money from a property. I may be able to help you claim it.'"
         )
 
         async for token in stream_gpt_response(initial_prompt):
             async for audio_chunk in synthesize_speech(token):
                 mulaw_audio = convert_to_mulaw(audio_chunk)
                 await websocket.send_bytes(mulaw_audio)
-                print("📤 Sent greeting chunk")
-            break  # Send only one full message
+                print("📤 Sent GPT greeting chunk")
+            break  # Only send first GPT sentence
 
-        # 🔁 2. Enter user interaction loop
+        # 🔁 3. Conversation loop: listen + respond
         while True:
             data = await websocket.receive_bytes()
             print(f"🎙️ Received audio chunk: {len(data)} bytes")
@@ -63,7 +76,7 @@ async def stream_audio(websocket: WebSocket):
                 async for audio_chunk in synthesize_speech(token):
                     mulaw_audio = convert_to_mulaw(audio_chunk)
                     await websocket.send_bytes(mulaw_audio)
-                    print("📤 Sent response chunk")
+                    print("📤 Sent GPT response chunk")
 
     except Exception as e:
         print(f"❌ Error: {e}")
