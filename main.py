@@ -1,57 +1,64 @@
-from fastapi import FastAPI, WebSocket, Request
-from fastapi.responses import PlainTextResponse
-import uvicorn
 import os
+import json
+import asyncio
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import PlainTextResponse
+from dotenv import load_dotenv
+from twilio.twiml.voice_response import VoiceResponse, Start, Stream
+from typing import Dict, Any
 
-from audio_utils import convert_to_mulaw
-from speech_to_text import transcribe_audio_chunk
-from gpt_stream import stream_gpt_response
-from elevenlabs_utils import stream_to_speech
+load_dotenv()
 
 app = FastAPI()
-
-@app.get("/")
-def read_root():
-    return {"message": "AI Voice Caller is live."}
+STREAM_URL = os.getenv("RENDER_STREAM_URL")  # e.g. "wss://.../stream"
 
 @app.post("/voice")
 async def voice_handler(request: Request):
-    # This returns TwiML that starts a <Stream> to your WebSocket server
-    stream_url = os.getenv("RENDER_STREAM_URL")
-    response = f"""
-    <Response>
-        <Start>
-            <Stream url="{stream_url}" />
-        </Start>
-    </Response>
-    """
-    return PlainTextResponse(content=response.strip(), media_type="text/xml")
+    # Immediately begin streaming media to our /stream websocket
+    vr = VoiceResponse()
+    vr.start()
+    vr.append(Stream(url=STREAM_URL))
+    # No Say—ElevenLabs will speak via the stream
+    return PlainTextResponse(content=str(vr), media_type="text/xml")
 
 @app.websocket("/stream")
-async def stream_audio(websocket: WebSocket):
-    await websocket.accept()
-    print("📞 Call connected.")
-
+async def media_stream(ws: WebSocket):
+    await ws.accept()
     try:
-        while True:
-            data = await websocket.receive_bytes()
-
-            # Transcribe caller's audio
-            transcript = transcribe_audio_chunk(data)
-            print(f"📝 User: {transcript}")
-
-            # GPT response + convert to speech
-            async for chunk in stream_gpt_response(transcript):
-                print(f"🤖 GPT: {chunk}")
-                audio_chunk = stream_to_speech(chunk)
-
-                if audio_chunk:
-                    await websocket.send_bytes(audio_chunk)
-
-    except Exception as e:
-        print(f"❌ Error: {e}")
+        # Send initial Headers if needed (depends on ElevenLabs API)
+        # Receive Twilio media frames and forward to ElevenLabs
+        eleven_ws = await connect_to_elevenlabs()
+        async def twilio_to_eleven():
+            while True:
+                msg = await ws.receive_text()
+                data = json.loads(msg)
+                if data.get("event") == "start":
+                    continue
+                if data.get("event") == "media":
+                    audio_payload = data["media"]["payload"]
+                    await eleven_ws.send(audio_payload)
+                if data.get("event") == "stop":
+                    await eleven_ws.send("EOS")
+                    break
+        async def eleven_to_twilio():
+            while True:
+                chunk = await eleven_ws.recv()
+                # Wrap raw audio in Twilio MediaStreamAudioFrame
+                frame = json.dumps({"event": "media", "media": {"payload": chunk}})
+                await ws.send_text(frame)
+        await asyncio.gather(twilio_to_eleven(), eleven_to_twilio())
+    except WebSocketDisconnect:
+        pass
     finally:
-        print("📴 Call disconnected.")
+        await ws.close()
 
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=10000)
+async def connect_to_elevenlabs():
+    # Replace this with actual ElevenLabs WebSocket handshake
+    import websockets
+    url = os.getenv("ELEVENLABS_WS_URL")
+    headers = {"Authorization": f"Bearer {os.getenv('ELEVENLABS_API_KEY')}"}
+    return await websockets.connect(url, extra_headers=headers)
+
+@app.get("/")
+async def root():
+    return {"message": "AI Voice Caller is running"}
